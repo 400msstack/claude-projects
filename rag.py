@@ -18,14 +18,23 @@ import chromadb
 from chromadb.config import Settings
 import requests
 
+# .envがあれば読み込む
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # ─── 設定 ───────────────────────────────────────────────
-OLLAMA_BASE    = "http://localhost:11434"
-EMBED_MODEL    = "nomic-embed-text"
-CHAT_MODEL     = "gemma3:27b"
-CHROMA_DIR     = "/Users/yamaosa/claude-projects/rag_db"
-CHUNK_SIZE     = 500   # 文字数
+OLLAMA_BASE    = os.getenv("OLLAMA_BASE", "http://localhost:11434")
+EMBED_MODEL    = os.getenv("EMBED_MODEL", "nomic-embed-text")
+CHAT_MODEL     = os.getenv("CHAT_MODEL", "gemma3:27b")
+CHROMA_DIR     = os.getenv("CHROMA_DIR", "./rag_db")
+OUTPUT_DIR     = os.getenv("OUTPUT_DIR", "./output")
+LANG_UI        = os.getenv("LANG_UI", "ja")
+CHUNK_SIZE     = 500
 CHUNK_OVERLAP  = 50
-TOP_K          = 5     # 検索で取得するチャンク数
+TOP_K          = 5
 
 app = Flask(__name__, template_folder="templates")
 
