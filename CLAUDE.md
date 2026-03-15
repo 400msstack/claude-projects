@@ -62,3 +62,4 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 「何を省くか」の判断が的確。過剰な機能追加は好まない
 - Cowork（Claude Desktop）で設計 → Claude Code（ターミナル）で実装 → Obsidianで記録 → RAGで検索 というワークフローで運用中
 - セッション終了時は `session_saver.py` で内容をObsidianに保存する
+- 誕生日: 2026-03-14。Local AI Suiteを公開した翌日が誕生日だった
