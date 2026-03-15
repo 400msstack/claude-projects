@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LocalRAG — 文書Q&A</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: #0a0f0a; color: #e2e8f0; font-family: 'Hiragino Sans', sans-serif; }
+    .card  { background: #111a11; border: 1px solid #1e3a1e; }
+    .card2 { background: #0d140d; border: 1px solid #183018; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #111a11; }
+    ::-webkit-scrollbar-thumb { background: #2d5a2d; border-radius: 3px; }
+    .fade-in { animation: fadeIn 0.3s ease; }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+    .cursor-blink::after { content: '▊'; animation: blink 1s infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+  </style>
+</head>
+<body class="min-h-screen">
+
+  <div class="border-b border-[#1e3a1e] px-6 py-0 flex items-center gap-4 sticky top-0 z-50" style="background:#0a0f0a">
+    <span class="text-emerald-400 font-bold text-lg py-3 mr-4">🌿 LocalRAG</span>
+    <span class="text-xs text-slate-500">{{ chat_model }} · nomic-embed-text</span>
+    <div class="ml-auto flex items-center gap-3">
+      <span id="chunk-badge" class="text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-full">
+        {{ chunk_count }} チャンク
+      </span>
+      <button onclick="confirmClear()" class="text-xs text-slate-500 hover:text-red-400 transition-colors">インデックスをクリア</button>
+    </div>
+  </div>
+
+  <div class="max-w-5xl mx-auto p-4 md:p-8 grid grid-cols-1 md:grid-cols-3 gap-6">
+
+    <!-- 左: インデックス管理 -->
+    <div class="md:col-span-1 space-y-4">
+
+      <div class="card rounded-2xl p-5">
+        <h2 class="text-sm font-bold text-emerald-400 mb-4">ファイルを追加</h2>
+
+        <!-- ファイルアップロード -->
+        <div id="drop-zone"
+          class="flex flex-col items-center justify-center gap-2 px-3 py-6 bg-[#0a0f0a] border-2 border-dashed border-[#1e3a1e] rounded-xl cursor-pointer hover:border-emerald-500 transition-colors text-sm text-slate-500 mb-4"
+          onclick="document.getElementById('file-input').click()"
+          ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">
+          <svg class="w-6 h-6 text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+          </svg>
+          <span id="file-label">PDF / MD / TXT をドロップ<br>またはクリックして選択</span>
+          <input id="file-input" type="file" accept=".pdf,.md,.txt" multiple class="hidden" onchange="handleFiles(this.files)">
+        </div>
+
+        <!-- フォルダ指定 -->
+        <div class="mb-4">
+          <label class="block text-xs text-slate-500 mb-1">フォルダを丸ごと追加（パス指定）</label>
+          <div class="flex gap-2">
+            <input id="folder-input" type="text" placeholder="/Users/yamaosa/Documents/..."
+              class="flex-1 bg-[#0a0f0a] border border-[#1e3a1e] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500">
+            <button onclick="addFolder()" class="px-3 py-2 bg-emerald-800 hover:bg-emerald-700 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap">追加</button>
+          </div>
+        </div>
+
+        <!-- 追加予定ファイルリスト -->
+        <div id="pending-list" class="space-y-1 mb-4 max-h-40 overflow-y-auto"></div>
+
+        <button id="index-btn" onclick="startIndexing()" disabled
+          class="w-full py-2.5 bg-emerald-700 hover:bg-emerald-600 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-xl text-sm font-bold transition-colors">
+          インデックスを作成
+        </button>
+
+        <!-- 進捗 -->
+        <div id="progress-area" class="hidden mt-4 space-y-2">
+          <div class="w-full bg-[#0a0f0a] rounded-full h-1.5">
+            <div id="progress-bar" class="bg-emerald-500 h-1.5 rounded-full transition-all duration-300" style="width:0%"></div>
+          </div>
+          <p id="progress-msg" class="text-xs text-slate-400"></p>
+        </div>
+      </div>
+
+      <!-- インデックス済みソース -->
+      <div class="card rounded-2xl p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-sm font-bold text-emerald-400">インデックス済み</h2>
+          <button onclick="loadStats()" class="text-xs text-slate-600 hover:text-slate-400">↻</button>
+        </div>
+        <div id="sources-list" class="space-y-1 max-h-48 overflow-y-auto text-xs text-slate-500">
+          <p>読み込み中...</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右: Q&A -->
+    <div class="md:col-span-2 flex flex-col gap-4">
+
+      <!-- チャット履歴 -->
+      <div id="chat-log" class="card rounded-2xl p-5 min-h-[400px] max-h-[65vh] overflow-y-auto space-y-4">
+        <div class="text-center text-slate-600 text-sm py-8">
+          <p class="text-2xl mb-2">🌿</p>
+          <p>ファイルをインデックスして質問してください</p>
+        </div>
+      </div>
+
+      <!-- 入力欄 -->
+      <div class="card rounded-2xl p-4">
+        <div class="flex items-center gap-3 mb-3">
+          <label class="flex items-center gap-2 cursor-pointer select-none">
+            <div class="relative">
+              <input type="checkbox" id="decompose-toggle" class="sr-only">
+              <div id="toggle-bg" class="w-10 h-5 bg-[#1e3a1e] rounded-full transition-colors"></div>
+              <div id="toggle-dot" class="absolute top-0.5 left-0.5 w-4 h-4 bg-slate-500 rounded-full transition-all"></div>
+            </div>
+            <span class="text-xs text-slate-500">質問分解モード</span>
+          </label>
+          <span id="decompose-hint" class="hidden text-xs text-emerald-500">漠然とした質問を自動分解して深く検索します</span>
+        </div>
+        <div class="flex gap-3">
+          <textarea id="question-input" rows="2" placeholder="資料について質問してください..."
+            class="flex-1 bg-[#0a0f0a] border border-[#1e3a1e] rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 text-sm resize-none"></textarea>
+          <button id="ask-btn" onclick="ask()"
+            class="px-5 py-3 bg-emerald-700 hover:bg-emerald-600 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-xl text-sm font-bold transition-colors self-end">
+            送信
+          </button>
+        </div>
+        <p class="text-xs text-slate-600 mt-2">送信ボタンで送信、Enter で改行</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  // ══════════════════════════════════════════
+  // ファイル管理
+  // ══════════════════════════════════════════
+  let pendingPaths = [];
+
+  function onDragOver(e) {
+    e.preventDefault();
+    document.getElementById('drop-zone').classList.add('border-emerald-500', 'bg-emerald-500/5');
+  }
+  function onDragLeave() {
+    document.getElementById('drop-zone').classList.remove('border-emerald-500', 'bg-emerald-500/5');
+  }
+  function onDrop(e) {
+    e.preventDefault(); onDragLeave();
+    handleFiles(e.dataTransfer.files);
+  }
+
+  async function handleFiles(files) {
+    if (!files.length) return;
+    document.getElementById('file-label').textContent = 'アップロード中...';
+    const form = new FormData();
+    for (const f of files) form.append('files', f);
+    const res = await fetch('/upload-and-index', { method: 'POST', body: form });
+    const data = await res.json();
+    data.paths.forEach(p => addToPending(p, p.split('/').pop()));
+    document.getElementById('file-label').textContent = 'PDF / MD / TXT をドロップ\nまたはクリックして選択';
+    document.getElementById('file-input').value = '';
+  }
+
+  async function addFolder() {
+    const folder = document.getElementById('folder-input').value.trim();
+    if (!folder) return;
+    const res = await fetch('/index-folder', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder }),
+    });
+    const data = await res.json();
+    if (data.error) { alert(data.error); return; }
+    data.paths.forEach(p => addToPending(p, p.replace(folder, '').replace(/^\//, '')));
+    document.getElementById('folder-input').value = '';
+    alert(`${data.count}件のファイルを追加しました`);
+  }
+
+  function addToPending(path, label) {
+    if (pendingPaths.includes(path)) return;
+    pendingPaths.push(path);
+    renderPending();
+  }
+
+  function removePending(path) {
+    pendingPaths = pendingPaths.filter(p => p !== path);
+    renderPending();
+  }
+
+  function renderPending() {
+    const el = document.getElementById('pending-list');
+    el.innerHTML = pendingPaths.map(p => `
+      <div class="flex items-center gap-2 text-xs text-slate-400 py-1">
+        <span class="flex-1 truncate">${escHtml(p.split('/').pop())}</span>
+        <button onclick="removePending('${escHtml(p)}')" class="text-slate-600 hover:text-red-400 flex-shrink-0">✕</button>
+      </div>
+    `).join('');
+    document.getElementById('index-btn').disabled = pendingPaths.length === 0;
+  }
+
+  // ══════════════════════════════════════════
+  // インデックス作成
+  // ══════════════════════════════════════════
+  function startIndexing() {
+    if (pendingPaths.length === 0) return;
+    document.getElementById('index-btn').disabled = true;
+    document.getElementById('progress-area').classList.remove('hidden');
+
+    const params = new URLSearchParams({ paths: JSON.stringify(pendingPaths) });
+    const es = new EventSource(`/index-files?${params}`);
+
+    es.onmessage = (e) => {
+      const { event, data } = JSON.parse(e.data);
+      if (event === 'progress') {
+        document.getElementById('progress-msg').textContent = data.msg;
+        const pct = data.total > 0 ? (data.current / data.total * 100) : 0;
+        document.getElementById('progress-bar').style.width = pct + '%';
+      } else if (event === 'done') {
+        document.getElementById('progress-msg').textContent = data.msg;
+        document.getElementById('progress-bar').style.width = '100%';
+        es.close();
+        pendingPaths = [];
+        renderPending();
+        loadStats();
+        document.getElementById('index-btn').disabled = false;
+      } else if (event === 'error') {
+        alert(data.msg);
+        es.close();
+        document.getElementById('index-btn').disabled = false;
+      }
+    };
+  }
+
+  // ══════════════════════════════════════════
+  // 統計
+  // ══════════════════════════════════════════
+  async function loadStats() {
+    const res = await fetch('/stats');
+    const data = await res.json();
+    document.getElementById('chunk-badge').textContent = `${data.chunk_count} チャンク`;
+    const el = document.getElementById('sources-list');
+    if (data.sources.length === 0) {
+      el.innerHTML = '<p>まだファイルがありません</p>';
+    } else {
+      el.innerHTML = data.sources.map(s => `
+        <div class="py-0.5 text-slate-400 truncate" title="${escHtml(s)}">📄 ${escHtml(s)}</div>
+      `).join('');
+    }
+  }
+
+  async function confirmClear() {
+    if (!confirm('インデックスを全削除しますか？')) return;
+    await fetch('/clear', { method: 'POST' });
+    loadStats();
+    document.getElementById('chunk-badge').textContent = '0 チャンク';
+  }
+
+  // ══════════════════════════════════════════
+  // 質問分解トグル
+  // ══════════════════════════════════════════
+  document.getElementById('decompose-toggle').addEventListener('change', function() {
+    const on = this.checked;
+    document.getElementById('toggle-bg').style.background = on ? '#065f46' : '';
+    document.getElementById('toggle-dot').style.transform = on ? 'translateX(20px)' : '';
+    document.getElementById('toggle-dot').style.background = on ? '#34d399' : '';
+    document.getElementById('decompose-hint').classList.toggle('hidden', !on);
+    document.getElementById('question-input').placeholder = on
+      ? '例: RAG導入後、自分のナレッジはどう変わった？'
+      : '資料について質問してください...';
+  });
+
+  // ══════════════════════════════════════════
+  // Q&A
+  // ══════════════════════════════════════════
+  function ask() {
+    const input = document.getElementById('question-input');
+    const question = input.value.trim();
+    if (!question) return;
+
+    const decompose = document.getElementById('decompose-toggle').checked;
+    input.value = '';
+    appendMessage('user', question + (decompose ? '　🔍 分解モード' : ''));
+
+    const answerEl = appendMessage('assistant', '');
+    const contentEl = answerEl.querySelector('.answer-content');
+    contentEl.classList.add('cursor-blink');
+    document.getElementById('ask-btn').disabled = true;
+
+    const endpoint = decompose ? '/decompose_query' : '/ask';
+    const params = new URLSearchParams({ q: question });
+    const es = new EventSource(`${endpoint}?${params}`);
+    let answer = '';
+
+    es.onmessage = (e) => {
+      const { event, data } = JSON.parse(e.data);
+      if (event === 'decomposing') {
+        contentEl.textContent = data.msg;
+      } else if (event === 'keywords') {
+        const sourcesEl = answerEl.querySelector('.sources');
+        sourcesEl.innerHTML = data.keywords.map(k =>
+          `<span class="inline-block bg-violet-500/10 border border-violet-500/20 text-violet-400 text-xs px-2 py-0.5 rounded-full">🔑 ${escHtml(k)}</span>`
+        ).join(' ');
+        contentEl.textContent = '検索中...';
+      } else if (event === 'searching') {
+        contentEl.textContent = data.msg;
+      } else if (event === 'sources') {
+        const sourcesEl = answerEl.querySelector('.sources');
+        const existing = sourcesEl.innerHTML;
+        sourcesEl.innerHTML = existing + ' ' + data.sources.map(s =>
+          `<span class="inline-block bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs px-2 py-0.5 rounded-full">📄 ${escHtml(s)}</span>`
+        ).join(' ');
+        contentEl.textContent = '';
+        answer = '';
+      } else if (event === 'token') {
+        answer += data.text;
+        contentEl.textContent = answer;
+        document.getElementById('chat-log').scrollTop = document.getElementById('chat-log').scrollHeight;
+      } else if (event === 'done') {
+        contentEl.classList.remove('cursor-blink');
+        es.close();
+        document.getElementById('ask-btn').disabled = false;
+      } else if (event === 'error') {
+        contentEl.textContent = data.msg;
+        contentEl.classList.remove('cursor-blink');
+        es.close();
+        document.getElementById('ask-btn').disabled = false;
+      }
+    };
+    es.onerror = () => {
+      contentEl.classList.remove('cursor-blink');
+      es.close();
+      document.getElementById('ask-btn').disabled = false;
+    };
+  }
+
+  function appendMessage(role, text) {
+    const log = document.getElementById('chat-log');
+    // 最初のプレースホルダーを消す
+    const placeholder = log.querySelector('.text-center');
+    if (placeholder) placeholder.remove();
+
+    const el = document.createElement('div');
+    el.className = 'fade-in';
+
+    if (role === 'user') {
+      el.innerHTML = `
+        <div class="flex justify-end">
+          <div class="max-w-[80%] bg-emerald-800/30 border border-emerald-700/30 rounded-2xl rounded-tr-sm px-4 py-3 text-sm text-slate-200">
+            ${escHtml(text)}
+          </div>
+        </div>`;
+    } else {
+      el.innerHTML = `
+        <div class="flex gap-3">
+          <div class="flex-shrink-0 w-7 h-7 rounded-full bg-emerald-800/40 border border-emerald-700/30 flex items-center justify-center text-xs">🌿</div>
+          <div class="flex-1 min-w-0">
+            <div class="sources flex flex-wrap gap-1 mb-2"></div>
+            <p class="answer-content text-sm text-slate-200 leading-relaxed whitespace-pre-wrap">${escHtml(text)}</p>
+          </div>
+        </div>`;
+    }
+
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+    return el;
+  }
+
+  // ══════════════════════════════════════════
+  // ユーティリティ
+  // ══════════════════════════════════════════
+  function escHtml(str) {
+    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  document.getElementById('question-input').addEventListener('keydown', e => {
+    // Enterキーは改行のみ、送信はボタンのみ
+  });
+
+  // 初期化
+  loadStats();
+  </script>
+</body>
+</html>

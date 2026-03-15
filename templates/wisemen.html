@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wisemen — 偉人会議</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <style>
+    body { background: #0d0f18; color: #e2e8f0; font-family: 'Hiragino Sans', sans-serif; }
+    .card  { background: #161923; border: 1px solid #2a2d3e; }
+    .card2 { background: #111320; border: 1px solid #222438; }
+    .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 0.75rem; }
+    .tab-active   { background: #161923; border-bottom-color: #161923; color: #f59e0b; border-top: 2px solid #f59e0b; }
+    .tab-inactive { color: #64748b; }
+    .tab-inactive:hover { color: #94a3b8; }
+    .thinking-dot::after { content: ''; animation: dots 1.2s infinite; }
+    @keyframes dots { 0%,20%{content:''} 40%{content:'.'} 60%{content:'..'} 80%,100%{content:'...'} }
+    .statement-enter { animation: fadeIn 0.4s ease; }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
+    pre { white-space: pre-wrap; word-break: break-word; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #161923; }
+    ::-webkit-scrollbar-thumb { background: #3d3820; border-radius: 3px; }
+    @media print {
+      body { background: #fff !important; color: #000 !important; font-size: 11pt; }
+      #nav, #setup-panel, #status-bar, #discussion-log, .no-print { display: none !important; }
+      #report-section { border: none !important; background: #fff !important; color: #000 !important; display: block !important; }
+      #report-content { color: #111 !important; }
+      .print-header { display: block !important; }
+    }
+    .print-header { display: none; }
+  </style>
+</head>
+<body class="min-h-screen">
+
+  <!-- ナビゲーション -->
+  <div id="nav" class="border-b border-[#2a2d3e] px-6 py-0 flex items-center gap-6 sticky top-0 z-50" style="background:#0d0f18">
+    <span class="text-amber-400 font-bold text-lg py-3 mr-4">📜 Wisemen</span>
+    <button onclick="showTab('new')"     id="tab-new"     class="py-3 px-1 text-sm font-semibold border-b-2 border-transparent tab-active   transition-all">新しい会議</button>
+    <button onclick="showTab('history')" id="tab-history" class="py-3 px-1 text-sm font-semibold border-b-2 border-transparent tab-inactive transition-all">履歴</button>
+  </div>
+
+  <!-- タブ: 新しい会議 -->
+  <div id="tab-new-panel" class="max-w-5xl mx-auto p-4 md:p-8">
+
+    <div id="setup-panel" class="card rounded-2xl p-6 mb-6">
+
+      <!-- テーマ -->
+      <div class="mb-6">
+        <label class="block text-sm font-semibold text-slate-300 mb-2">議題・テーマ</label>
+        <div class="flex gap-2">
+          <input id="theme" type="text" placeholder="例: 現代社会における個人の自由とは何か"
+            class="flex-1 bg-[#0d0f18] border border-[#2a2d3e] rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 text-lg">
+          <button id="suggest-btn" onclick="suggestWisemen()"
+            class="px-4 py-3 bg-amber-700 hover:bg-amber-600 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-xl text-sm font-semibold transition-colors whitespace-nowrap">
+            ✦ 偉人を自動提案
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+
+        <!-- 左: 偉人セット + スタイル -->
+        <div class="space-y-6">
+
+          <div>
+            <label class="block text-sm font-semibold text-slate-300 mb-2">偉人セット</label>
+            <div id="wisemen-set-list" class="space-y-2">
+              {% for key, val in wisemen_sets.items() %}
+              <label class="flex items-center gap-3 p-3 rounded-xl border border-[#2a2d3e] cursor-pointer hover:border-amber-500 transition-colors has-[:checked]:border-amber-500 has-[:checked]:bg-amber-500/10">
+                <input type="radio" name="wisemen_set" value="{{ key }}" {% if key == '1' %}checked{% endif %} class="accent-amber-500" onchange="onSetChange()">
+                <span class="font-medium">{{ val.name }}</span>
+                <span class="text-xs text-slate-500 ml-auto truncate">{{ val.wisemen | map(attribute='name') | join(' · ') }}</span>
+              </label>
+              {% endfor %}
+              <label class="flex items-center gap-3 p-3 rounded-xl border border-[#2a2d3e] cursor-pointer hover:border-amber-500 transition-colors has-[:checked]:border-amber-500 has-[:checked]:bg-amber-500/10">
+                <input type="radio" name="wisemen_set" value="custom" class="accent-amber-500" onchange="onSetChange()">
+                <span class="font-medium text-amber-400">＋ カスタム作成</span>
+              </label>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-sm font-semibold text-slate-300 mb-2">議論スタイル</label>
+            <div class="space-y-2">
+              {% for key, val in style_options.items() %}
+              <label class="flex items-center gap-3 p-3 rounded-xl border border-[#2a2d3e] cursor-pointer hover:border-amber-500 transition-colors has-[:checked]:border-amber-500 has-[:checked]:bg-amber-500/10">
+                <input type="radio" name="style" value="{{ key }}" {% if key == 'balanced' %}checked{% endif %} class="accent-amber-500">
+                <span class="font-medium">{{ val.name }}</span>
+                <span class="text-xs text-slate-500">— {{ val.desc }}</span>
+              </label>
+              {% endfor %}
+            </div>
+          </div>
+
+        </div>
+
+        <!-- 右: 議論の深さ + 参考資料 -->
+        <div class="space-y-6">
+
+          <div>
+            <label class="block text-sm font-semibold text-slate-300 mb-2">議論の深さ</label>
+            <div class="space-y-2">
+              {% for key, val in depth_options.items() %}
+              <label class="flex items-center gap-3 p-3 rounded-xl border border-[#2a2d3e] cursor-pointer hover:border-amber-500 transition-colors has-[:checked]:border-amber-500 has-[:checked]:bg-amber-500/10">
+                <input type="radio" name="depth" value="{{ key }}" {% if key == '2' %}checked{% endif %} class="accent-amber-500">
+                <span class="font-medium">{{ val.name }}</span>
+                <span class="text-xs text-slate-500">— {{ val.desc }}</span>
+              </label>
+              {% endfor %}
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-sm font-semibold text-slate-300 mb-2">参考資料</label>
+            <div class="flex gap-2 mb-2">
+              <input id="url-input" type="url" placeholder="https://..."
+                class="flex-1 bg-[#0d0f18] border border-[#2a2d3e] rounded-xl px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-amber-500 text-sm">
+              <button onclick="addUrl()" class="px-4 py-2 bg-amber-700 hover:bg-amber-600 rounded-xl text-sm font-semibold transition-colors whitespace-nowrap">URL追加</button>
+            </div>
+            <div id="drop-zone"
+              class="flex items-center justify-center gap-2 px-3 py-3 bg-[#0d0f18] border-2 border-dashed border-[#2a2d3e] rounded-xl cursor-pointer hover:border-amber-500 transition-colors text-sm text-slate-500 mb-2"
+              onclick="document.getElementById('file-input').click()"
+              ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">
+              <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
+              <span id="file-label">MD / TXT をドロップ、またはクリックして選択</span>
+              <input id="file-input" type="file" accept=".md,.txt" class="hidden" onchange="addFile(this.files[0])">
+            </div>
+            <div id="url-list" class="space-y-2 text-sm"></div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- カスタム偉人エディタ -->
+      <div id="custom-editor" class="hidden mb-6 card2 rounded-xl p-4">
+        <div class="flex items-center justify-between mb-3">
+          <span class="text-sm font-semibold text-amber-300">カスタム偉人セット</span>
+        </div>
+        <div id="custom-wisemen-list" class="space-y-2 mb-3"></div>
+        <button onclick="addWisemanRow()" class="text-xs text-amber-400 hover:text-amber-300 transition-colors">＋ 偉人を追加</button>
+        <p class="text-xs text-slate-500 mt-2">2〜6名まで設定できます</p>
+      </div>
+
+      <button id="start-btn" onclick="startCouncil()"
+        class="w-full py-4 bg-amber-700 hover:bg-amber-600 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-xl text-lg font-bold transition-colors">
+        会議を開始する
+      </button>
+    </div>
+
+    <!-- 進行パネル -->
+    <div id="council-panel" class="hidden">
+      <div id="status-bar" class="card rounded-2xl px-5 py-3 mb-4 flex items-center gap-3">
+        <div id="status-dot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"></div>
+        <span id="status-text" class="text-slate-300 text-sm">準備中...</span>
+      </div>
+      <div id="discussion-log" class="card rounded-2xl p-5 mb-4 space-y-4 max-h-[60vh] overflow-y-auto"></div>
+
+      <!-- 可視化 -->
+      <div id="viz-section" class="hidden card rounded-2xl p-6 mb-4">
+        <h2 class="text-lg font-bold text-amber-400 mb-4">議論の可視化</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
+          <div>
+            <p class="text-xs text-slate-500 mb-3 font-semibold uppercase tracking-wider">スタンス分析（レーダー）</p>
+            <canvas id="radar-chart"></canvas>
+          </div>
+          <div>
+            <p class="text-xs text-slate-500 mb-3 font-semibold uppercase tracking-wider">総合スタンス — 懸念 ↔ 楽観</p>
+            <div id="stance-bars" class="space-y-4"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- レポート -->
+      <div id="report-section" class="hidden card rounded-2xl p-6">
+        <div class="print-header mb-4">
+          <h1 id="print-theme" class="text-2xl font-bold"></h1>
+          <p id="print-meta" class="text-sm text-gray-500 mt-1"></p>
+        </div>
+        <div class="flex items-center justify-between mb-4 no-print">
+          <h2 class="text-xl font-bold text-amber-400">総合レポート</h2>
+          <div class="flex items-center gap-3">
+            <span class="badge bg-green-500/20 text-green-400 border border-green-500/30">✓ Obsidianに保存済み</span>
+            <button onclick="window.print()" class="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm transition-colors">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg>
+              PDF保存
+            </button>
+          </div>
+        </div>
+        <div id="report-content" class="text-slate-300 leading-relaxed text-sm"></div>
+        <div id="saved-path" class="mt-4 text-xs text-slate-500 no-print"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- タブ: 履歴（シンプル版） -->
+  <div id="tab-history-panel" class="hidden max-w-5xl mx-auto p-4 md:p-8">
+    <p class="text-slate-500 text-sm">履歴は Obsidian の WisemenLogs フォルダで確認できます。</p>
+  </div>
+
+  <script>
+  // ══════════════════════════════════════════
+  // タブ
+  // ══════════════════════════════════════════
+  function showTab(name) {
+    document.getElementById('tab-new-panel').classList.toggle('hidden', name !== 'new');
+    document.getElementById('tab-history-panel').classList.toggle('hidden', name !== 'history');
+    document.getElementById('tab-new').className     = 'py-3 px-1 text-sm font-semibold border-b-2 border-transparent transition-all ' + (name === 'new'     ? 'tab-active' : 'tab-inactive');
+    document.getElementById('tab-history').className = 'py-3 px-1 text-sm font-semibold border-b-2 border-transparent transition-all ' + (name === 'history' ? 'tab-active' : 'tab-inactive');
+  }
+
+  // ══════════════════════════════════════════
+  // 偉人セット選択
+  // ══════════════════════════════════════════
+  let customWisemen = [];
+
+  function onSetChange() {
+    const val = document.querySelector('input[name="wisemen_set"]:checked')?.value;
+    document.getElementById('custom-editor').classList.toggle('hidden', val !== 'custom');
+    if (val === 'custom' && customWisemen.length === 0) {
+      addWisemanRow(); addWisemanRow(); addWisemanRow(); addWisemanRow();
+    }
+  }
+
+  function addWisemanRow(w = {}) {
+    if (customWisemen.length >= 6) return;
+    const id = Date.now() + Math.random();
+    customWisemen.push({ id, name: w.name||'', era: w.era||'', lens: w.lens||'' });
+    renderCustomWisemen();
+  }
+
+  function removeWisemanRow(id) {
+    customWisemen = customWisemen.filter(w => w.id !== id);
+    renderCustomWisemen();
+  }
+
+  function renderCustomWisemen() {
+    const list = document.getElementById('custom-wisemen-list');
+    list.innerHTML = customWisemen.map((w, i) => `
+      <div class="grid grid-cols-3 gap-2 items-center">
+        <input type="text" placeholder="名前（例: アリストテレス）" value="${escHtml(w.name)}"
+          oninput="customWisemen[${i}].name=this.value"
+          class="bg-[#0d0f18] border border-[#2a2d3e] rounded-lg px-2 py-1.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-amber-500">
+        <input type="text" placeholder="時代・国" value="${escHtml(w.era)}"
+          oninput="customWisemen[${i}].era=this.value"
+          class="bg-[#0d0f18] border border-[#2a2d3e] rounded-lg px-2 py-1.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-amber-500">
+        <div class="flex gap-1">
+          <input type="text" placeholder="思想的視点" value="${escHtml(w.lens)}"
+            oninput="customWisemen[${i}].lens=this.value"
+            class="flex-1 bg-[#0d0f18] border border-[#2a2d3e] rounded-lg px-2 py-1.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-amber-500">
+          <button onclick="removeWisemanRow(${w.id})" class="text-slate-600 hover:text-red-400 px-1">✕</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  // ══════════════════════════════════════════
+  // 偉人自動提案
+  // ══════════════════════════════════════════
+  async function suggestWisemen() {
+    const theme = document.getElementById('theme').value.trim();
+    if (!theme) { alert('先にテーマを入力してください'); return; }
+
+    const btn = document.getElementById('suggest-btn');
+    btn.disabled = true;
+    btn.textContent = '提案中...';
+
+    try {
+      const res = await fetch('/suggest-wisemen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ theme }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      if (!data.wisemen || data.wisemen.length === 0) throw new Error('提案の取得に失敗しました');
+
+      document.querySelector('input[name="wisemen_set"][value="custom"]').checked = true;
+      onSetChange();
+      customWisemen = [];
+      data.wisemen.forEach(w => addWisemanRow(w));
+    } catch (e) {
+      alert('エラー: ' + e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '✦ 偉人を自動提案';
+    }
+  }
+
+  // ══════════════════════════════════════════
+  // URL / ファイル
+  // ══════════════════════════════════════════
+  let references = [];
+
+  async function addUrl() {
+    const input = document.getElementById('url-input');
+    const url = input.value.trim();
+    if (!url) return;
+    input.disabled = true; input.value = '取得中...';
+    try {
+      const res = await fetch('/fetch-url', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      references.push(data);
+      renderUrlList();
+      input.value = '';
+    } catch (e) {
+      alert('URL取得エラー: ' + e.message);
+      input.value = url;
+    } finally { input.disabled = false; }
+  }
+
+  function onDragOver(e) {
+    e.preventDefault();
+    document.getElementById('drop-zone').classList.add('border-amber-500', 'bg-amber-500/5');
+  }
+  function onDragLeave() {
+    document.getElementById('drop-zone').classList.remove('border-amber-500', 'bg-amber-500/5');
+  }
+  function onDrop(e) {
+    e.preventDefault();
+    onDragLeave();
+    const file = e.dataTransfer.files[0];
+    if (file) addFile(file);
+  }
+
+  async function addFile(file) {
+    if (!file) return;
+    document.getElementById('file-label').textContent = '追加中...';
+    const form = new FormData();
+    form.append('file', file);
+    try {
+      const res = await fetch('/upload-file', { method: 'POST', body: form });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      references.push(data);
+      renderUrlList();
+    } catch (e) {
+      alert('ファイル追加エラー: ' + e.message);
+    } finally {
+      document.getElementById('file-label').textContent = 'MD / TXT をドロップ、またはクリックして選択';
+      document.getElementById('file-input').value = '';
+    }
+  }
+
+  function removeUrl(i) { references.splice(i, 1); renderUrlList(); }
+
+  function renderUrlList() {
+    document.getElementById('url-list').innerHTML = references.map((r, i) => `
+      <div class="flex items-center gap-2 p-2 bg-[#0d0f18] rounded-lg border border-[#2a2d3e]">
+        <span class="flex-1 text-slate-300 text-xs truncate">${escHtml(r.title)}</span>
+        <button onclick="removeUrl(${i})" class="text-slate-500 hover:text-red-400 flex-shrink-0">✕</button>
+      </div>
+    `).join('');
+  }
+
+  document.getElementById('url-input').addEventListener('keydown', e => { if (e.key === 'Enter') addUrl(); });
+
+  // ══════════════════════════════════════════
+  // 会議開始
+  // ══════════════════════════════════════════
+  const WISEMAN_COLORS = [
+    'bg-amber-500/20 text-amber-300 border-amber-500/40',
+    'bg-orange-500/20 text-orange-300 border-orange-500/40',
+    'bg-yellow-500/20 text-yellow-300 border-yellow-500/40',
+    'bg-red-500/20 text-red-300 border-red-500/40',
+    'bg-rose-500/20 text-rose-300 border-rose-500/40',
+    'bg-pink-500/20 text-pink-300 border-pink-500/40',
+  ];
+  let wisemanColorMap = {}, colorIdx = 0;
+  function getColor(name) {
+    if (!wisemanColorMap[name]) wisemanColorMap[name] = WISEMAN_COLORS[colorIdx++ % WISEMAN_COLORS.length];
+    return wisemanColorMap[name];
+  }
+
+  function startCouncil() {
+    const theme = document.getElementById('theme').value.trim();
+    if (!theme) { alert('テーマを入力してください'); return; }
+
+    const setVal   = document.querySelector('input[name="wisemen_set"]:checked').value;
+    const depthKey = document.querySelector('input[name="depth"]:checked').value;
+    const style    = document.querySelector('input[name="style"]:checked').value;
+
+    let setKey = setVal, customJson = '';
+    if (setVal === 'custom') {
+      const wisemen = customWisemen.map(({ name, era, lens }) => ({ name, era, lens })).filter(w => w.name);
+      if (wisemen.length < 2) { alert('偉人を2名以上設定してください'); return; }
+      customJson = JSON.stringify(wisemen);
+    }
+
+    document.getElementById('start-btn').disabled = true;
+    document.getElementById('council-panel').classList.remove('hidden');
+    document.getElementById('discussion-log').innerHTML = '';
+    document.getElementById('report-section').classList.add('hidden');
+    document.getElementById('viz-section').classList.add('hidden');
+    if (radarChart) { radarChart.destroy(); radarChart = null; }
+    wisemanColorMap = {}; colorIdx = 0;
+
+    const params = new URLSearchParams({ theme, set: setKey, depth: depthKey, style,
+      refs: JSON.stringify(references), custom_wisemen: customJson });
+    const es = new EventSource(`/start?${params}`);
+
+    es.onmessage = (e) => {
+      const { event, data } = JSON.parse(e.data);
+      if (event === 'round_start')    { setStatus(data.label, true); appendRoundHeader(data.label); }
+      else if (event === 'thinking')  { setStatus(`${data.name} が語っています`, true); showThinking(data.name); }
+      else if (event === 'statement') { removeThinking(); appendStatement(data); }
+      else if (event === 'report_start') { setStatus('レポートを生成中...', true); }
+      else if (event === 'viz_start') { setStatus('議論を分析中...', true); }
+      else if (event === 'visualization') { showVisualization(data); }
+      else if (event === 'done') {
+        setStatus('完了', false);
+        showReport(data.report, data.path, theme);
+        es.close();
+        document.getElementById('start-btn').disabled = false;
+      }
+      else if (event === 'error') {
+        setStatus('エラー: ' + data.msg, false);
+        es.close();
+        document.getElementById('start-btn').disabled = false;
+      }
+    };
+    es.onerror = () => { setStatus('接続エラー', false); es.close(); document.getElementById('start-btn').disabled = false; };
+  }
+
+  // ══════════════════════════════════════════
+  // UI ヘルパー
+  // ══════════════════════════════════════════
+  function setStatus(text, active) {
+    document.getElementById('status-text').textContent = text;
+    document.getElementById('status-dot').className = `w-2.5 h-2.5 rounded-full ${active ? 'bg-amber-400 animate-pulse' : 'bg-green-400'}`;
+  }
+
+  function appendRoundHeader(label) {
+    const log = document.getElementById('discussion-log');
+    const el = document.createElement('div');
+    el.className = 'flex items-center gap-3 py-2';
+    el.innerHTML = `<div class="h-px flex-1 bg-[#2a2d3e]"></div><span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">${label}</span><div class="h-px flex-1 bg-[#2a2d3e]"></div>`;
+    log.appendChild(el); log.scrollTop = log.scrollHeight;
+  }
+
+  function showThinking(name) {
+    removeThinking();
+    const log = document.getElementById('discussion-log');
+    const el = document.createElement('div');
+    el.id = 'thinking-indicator';
+    el.className = 'flex items-center gap-2 text-slate-500 text-sm px-1';
+    el.innerHTML = `<div class="w-2 h-2 rounded-full bg-amber-800 animate-bounce"></div><span>${name} が思案しています<span class="thinking-dot"></span></span>`;
+    log.appendChild(el); log.scrollTop = log.scrollHeight;
+  }
+
+  function removeThinking() { document.getElementById('thinking-indicator')?.remove(); }
+
+  function appendStatement(data) {
+    const log = document.getElementById('discussion-log');
+    const color = getColor(data.name);
+    const el = document.createElement('div');
+    el.className = 'statement-enter';
+    el.innerHTML = `
+      <div class="flex items-start gap-3">
+        <div class="flex-shrink-0 mt-0.5"><span class="badge border ${color}">${data.name}</span></div>
+        <div class="flex-1 min-w-0">
+          <p class="text-xs text-slate-500 mb-1">${escHtml(data.era)}</p>
+          <p class="text-slate-200 leading-relaxed text-sm">${escHtml(data.text)}</p>
+        </div>
+      </div>`;
+    log.appendChild(el); log.scrollTop = log.scrollHeight;
+  }
+
+  function showReport(text, path, theme) {
+    const section = document.getElementById('report-section');
+    section.classList.remove('hidden');
+    document.getElementById('report-content').innerHTML = mdToHtml(text);
+    document.getElementById('saved-path').textContent = '保存先: ' + path;
+    document.getElementById('print-theme').textContent = '偉人会議レポート: ' + theme;
+    document.getElementById('print-meta').textContent = '生成日時: ' + new Date().toLocaleString('ja-JP');
+    section.scrollIntoView({ behavior: 'smooth' });
+  }
+
+  // ══════════════════════════════════════════
+  // 可視化
+  // ══════════════════════════════════════════
+  const CHART_COLORS = [
+    'rgba(251,191,36,',
+    'rgba(251,146,60,',
+    'rgba(250,204,21,',
+    'rgba(239,68,68,',
+    'rgba(244,114,182,',
+    'rgba(167,139,250,',
+  ];
+  let radarChart = null;
+
+  function showVisualization(data) {
+    if (!data.experts || data.experts.length === 0) return;
+    document.getElementById('viz-section').classList.remove('hidden');
+
+    const labels = ['リスク認識', '行動の緊急性', '楽観度', '合意度'];
+    const datasets = data.experts.map((e, i) => {
+      const c = CHART_COLORS[i % CHART_COLORS.length];
+      return {
+        label: e.name,
+        data: [e.risk, e.urgency, e.optimism, e.consensus],
+        backgroundColor: c + '0.15)',
+        borderColor: c + '0.9)',
+        borderWidth: 2,
+        pointBackgroundColor: c + '1)',
+      };
+    });
+
+    if (radarChart) radarChart.destroy();
+    radarChart = new Chart(document.getElementById('radar-chart'), {
+      type: 'radar',
+      data: { labels, datasets },
+      options: {
+        scales: {
+          r: {
+            min: 0, max: 10,
+            ticks: { stepSize: 2, color: '#64748b', backdropColor: 'transparent', font: { size: 10 } },
+            grid: { color: '#2a2d3e' },
+            angleLines: { color: '#2a2d3e' },
+            pointLabels: { color: '#94a3b8', font: { size: 11 } },
+          }
+        },
+        plugins: {
+          legend: { labels: { color: '#94a3b8', font: { size: 11 }, boxWidth: 12 } }
+        },
+      }
+    });
+
+    const barsEl = document.getElementById('stance-bars');
+    barsEl.innerHTML = data.experts.map((e, i) => {
+      const c = CHART_COLORS[i % CHART_COLORS.length] + '0.85)';
+      const label = e.stance <= -3 ? '強い懸念' : e.stance <= -1 ? '懸念寄り' : e.stance < 1 ? '中立' : e.stance < 3 ? '楽観寄り' : '強い楽観';
+      return `
+        <div>
+          <div class="flex justify-between text-xs text-slate-400 mb-1">
+            <span class="font-medium" style="color:${c}">${escHtml(e.name)}</span>
+            <span>${label}</span>
+          </div>
+          <div class="relative h-2 bg-[#2a2d3e] rounded-full overflow-hidden">
+            <div class="absolute top-0 left-1/2 w-px h-full bg-slate-600"></div>
+            <div class="absolute top-0 h-full rounded-full transition-all duration-700"
+              style="width:${Math.abs(e.stance)/5*50}%;
+                     left:${e.stance >= 0 ? '50%' : (50 - Math.abs(e.stance)/5*50) + '%'};
+                     background:${c}"></div>
+          </div>
+          <div class="flex justify-between text-[10px] text-slate-600 mt-0.5"><span>懸念</span><span>楽観</span></div>
+        </div>`;
+    }).join('');
+
+    document.getElementById('viz-section').scrollIntoView({ behavior: 'smooth' });
+  }
+
+  // ══════════════════════════════════════════
+  // ユーティリティ
+  // ══════════════════════════════════════════
+  function escHtml(str) {
+    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function escapeHtml(str) { return escHtml(str).replace(/\n/g,'<br>'); }
+
+  function mdToHtml(md) {
+    let html = md
+      .replace(/^### (.+)$/gm,  '<h3 class="text-base font-bold text-amber-300 mt-5 mb-2">$1</h3>')
+      .replace(/^## (.+)$/gm,   '<h2 class="text-lg font-bold text-amber-400 mt-6 mb-2">$1</h2>')
+      .replace(/^# (.+)$/gm,    '<h1 class="text-xl font-bold text-white mt-6 mb-3">$1</h1>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong class="text-white font-semibold">$1</strong>')
+      .replace(/^> (.+)$/gm,    '<blockquote class="border-l-2 border-amber-500 pl-4 text-slate-400 italic my-2 text-xs">$1</blockquote>')
+      .replace(/^[-*] (.+)$/gm, '<li class="ml-4 list-disc text-slate-300 text-sm leading-relaxed">$1</li>')
+      .replace(/^\d+\. (.+)$/gm,'<li class="ml-4 list-decimal text-slate-300 text-sm leading-relaxed">$1</li>');
+
+    const tableRegex = /(\|.+\|\n)+/g;
+    html = html.replace(tableRegex, (block) => {
+      const rows = block.trim().split('\n').filter(r => !/^\|[-:| ]+\|$/.test(r.trim()));
+      const tableRows = rows.map((r, i) => {
+        const cells = r.split('|').slice(1,-1);
+        const tag = i === 0 ? 'th' : 'td';
+        const cls = i === 0 ? 'bg-[#161923] text-slate-300 font-semibold' : 'text-slate-400';
+        return '<tr>' + cells.map(c => `<${tag} class="border border-[#2a2d3e] px-3 py-1.5 text-xs ${cls}">${c.trim()}</${tag}>`).join('') + '</tr>';
+      });
+      return `<div class="overflow-x-auto my-3"><table class="w-full border-collapse">${tableRows.join('')}</table></div>`;
+    });
+
+    return html.replace(/\n\n/g,'<br><br>').replace(/\n/g,'<br>');
+  }
+  </script>
+</body>
+</html>

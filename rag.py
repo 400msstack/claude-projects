@@ -1,0 +1,402 @@
+#!/usr/bin/env python3
+"""
+LocalRAG — Ollamaを使ったローカル文書Q&Aアプリ
+埋め込み: nomic-embed-text
+回答生成: gemma3:27b
+ベクトルDB: ChromaDB（ローカル保存）
+"""
+
+import os
+import re
+import json
+import queue
+import threading
+from pathlib import Path
+from datetime import datetime
+from flask import Flask, render_template, request, Response, jsonify
+import chromadb
+from chromadb.config import Settings
+import requests
+
+# ─── 設定 ───────────────────────────────────────────────
+OLLAMA_BASE    = "http://localhost:11434"
+EMBED_MODEL    = "nomic-embed-text"
+CHAT_MODEL     = "gemma3:27b"
+CHROMA_DIR     = "/Users/yamaosa/claude-projects/rag_db"
+CHUNK_SIZE     = 500   # 文字数
+CHUNK_OVERLAP  = 50
+TOP_K          = 5     # 検索で取得するチャンク数
+
+app = Flask(__name__, template_folder="templates")
+
+# ChromaDB初期化
+chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
+
+
+# ─── Ollama呼び出し ──────────────────────────────────────
+def embed(text: str) -> list[float]:
+    res = requests.post(f"{OLLAMA_BASE}/api/embeddings",
+                        json={"model": EMBED_MODEL, "prompt": text})
+    return res.json()["embedding"]
+
+
+def stream_chat(system: str, user: str):
+    """ストリーミングでトークンを生成"""
+    res = requests.post(
+        f"{OLLAMA_BASE}/api/chat",
+        json={
+            "model": CHAT_MODEL,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user",   "content": user},
+            ],
+            "stream": True,
+        },
+        stream=True,
+    )
+    for line in res.iter_lines():
+        if line:
+            data = json.loads(line)
+            token = data.get("message", {}).get("content", "")
+            if token:
+                yield token
+            if data.get("done"):
+                break
+
+
+# ─── テキスト処理 ────────────────────────────────────────
+def read_file(path: str) -> str:
+    ext = Path(path).suffix.lower()
+    if ext == ".pdf":
+        import pymupdf
+        doc = pymupdf.open(path)
+        return "\n".join(page.get_text() for page in doc)
+    elif ext in (".md", ".txt"):
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    return ""
+
+
+def split_chunks(text: str, source: str) -> list[dict]:
+    chunks = []
+    start = 0
+    idx = 0
+    while start < len(text):
+        end = start + CHUNK_SIZE
+        chunk = text[start:end]
+        if chunk.strip():
+            chunks.append({
+                "id":     f"{source}_{idx}",
+                "text":   chunk,
+                "source": source,
+            })
+            idx += 1
+        start += CHUNK_SIZE - CHUNK_OVERLAP
+    return chunks
+
+
+# ─── インデックス管理 ────────────────────────────────────
+def get_or_create_collection(name: str = "documents"):
+    return chroma_client.get_or_create_collection(name=name)
+
+
+def index_files(paths: list[str], q: queue.Queue):
+    def send(event, data):
+        q.put({"event": event, "data": data})
+
+    collection = get_or_create_collection()
+    total = len(paths)
+
+    for i, path in enumerate(paths):
+        filename = os.path.basename(path)
+        send("progress", {"msg": f"読み込み中: {filename}", "current": i, "total": total})
+
+        text = read_file(path)
+        if not text.strip():
+            send("progress", {"msg": f"スキップ: {filename}（内容なし）", "current": i+1, "total": total})
+            continue
+
+        chunks = split_chunks(text, filename)
+        send("progress", {"msg": f"ベクトル化中: {filename}（{len(chunks)}チャンク）", "current": i, "total": total})
+
+        for chunk in chunks:
+            # 既存のIDを上書き（再インデックス対応）
+            try:
+                collection.delete(ids=[chunk["id"]])
+            except Exception:
+                pass
+            embedding = embed(chunk["text"])
+            collection.add(
+                ids=[chunk["id"]],
+                embeddings=[embedding],
+                documents=[chunk["text"]],
+                metadatas=[{"source": chunk["source"]}],
+            )
+
+        send("progress", {"msg": f"完了: {filename}", "current": i+1, "total": total})
+
+    # 統計
+    count = collection.count()
+    send("done", {"msg": f"インデックス完了 — 総チャンク数: {count}", "total_chunks": count})
+    q.put(None)
+
+
+# ─── Query Decomposition ────────────────────────────────
+def decompose_question(question: str) -> list[str]:
+    """漠然とした質問を検索キーワードに分解"""
+    res = requests.post(
+        f"{OLLAMA_BASE}/api/chat",
+        json={
+            "model": CHAT_MODEL,
+            "messages": [
+                {"role": "system", "content": (
+                    "あなたは検索クエリ設計の専門家です。"
+                    "ユーザーの質問を、ベクトル検索に適した具体的なキーワード・フレーズに分解してください。"
+                    "JSONのみを返してください。説明文は不要です。"
+                )},
+                {"role": "user", "content": (
+                    f"質問: {question}\n\n"
+                    "この質問を検索に適した3〜5個のキーワードに分解してください。\n"
+                    '{"keywords": ["キーワード1", "キーワード2", "キーワード3"]}'
+                )},
+            ],
+            "stream": False,
+        },
+    )
+    text = res.json().get("message", {}).get("content", "")
+    try:
+        match = re.search(r'\{[\s\S]+\}', text)
+        if match:
+            data = json.loads(match.group())
+            return data.get("keywords", [question])
+    except Exception:
+        pass
+    return [question]
+
+
+def multi_query_search(keywords: list[str], n: int = 3) -> list[dict]:
+    """複数キーワードで検索し、重複除去して統合"""
+    collection = get_or_create_collection()
+    if collection.count() == 0:
+        return []
+    seen_ids = set()
+    all_hits = []
+    for kw in keywords:
+        q_embed = embed(kw)
+        results = collection.query(
+            query_embeddings=[q_embed],
+            n_results=min(n, collection.count()),
+            include=["documents", "metadatas", "distances"],
+        )
+        for doc, meta, dist in zip(
+            results["documents"][0],
+            results["metadatas"][0],
+            results["distances"][0],
+        ):
+            key = doc[:80]  # 先頭80文字で重複判定
+            if key not in seen_ids:
+                seen_ids.add(key)
+                all_hits.append({
+                    "text": doc,
+                    "source": meta.get("source", ""),
+                    "score": round(1 - dist, 3),
+                    "keyword": kw,
+                })
+    # スコア降順でソート
+    return sorted(all_hits, key=lambda x: x["score"], reverse=True)
+
+
+# ─── 検索・回答 ─────────────────────────────────────────
+def search(query: str, n: int = TOP_K) -> list[dict]:
+    collection = get_or_create_collection()
+    if collection.count() == 0:
+        return []
+    q_embed = embed(query)
+    results = collection.query(
+        query_embeddings=[q_embed],
+        n_results=min(n, collection.count()),
+        include=["documents", "metadatas", "distances"],
+    )
+    hits = []
+    for doc, meta, dist in zip(
+        results["documents"][0],
+        results["metadatas"][0],
+        results["distances"][0],
+    ):
+        hits.append({"text": doc, "source": meta.get("source",""), "score": round(1 - dist, 3)})
+    return hits
+
+
+# ─── Flask ルート ────────────────────────────────────────
+@app.route("/")
+def index():
+    collection = get_or_create_collection()
+    chunk_count = collection.count()
+    return render_template("rag.html", chunk_count=chunk_count, chat_model=CHAT_MODEL)
+
+
+@app.route("/index-files", methods=["GET"])
+def index_files_stream():
+    paths_json = request.args.get("paths", "[]")
+    paths = json.loads(paths_json)
+    paths = [p for p in paths if os.path.exists(p)]
+
+    if not paths:
+        return Response('data: {"event":"error","data":{"msg":"有効なファイルがありません"}}\n\n',
+                        mimetype="text/event-stream")
+
+    q = queue.Queue()
+    thread = threading.Thread(target=index_files, args=(paths, q), daemon=True)
+    thread.start()
+
+    def generate():
+        while True:
+            item = q.get()
+            if item is None:
+                break
+            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
+
+
+@app.route("/upload-and-index", methods=["POST"])
+def upload_and_index():
+    """アップロードされたファイルを一時保存してパスを返す"""
+    files = request.files.getlist("files")
+    saved = []
+    tmp_dir = "/tmp/rag_uploads"
+    os.makedirs(tmp_dir, exist_ok=True)
+    for f in files:
+        ext = Path(f.filename).suffix.lower()
+        if ext not in (".md", ".txt", ".pdf"):
+            continue
+        path = os.path.join(tmp_dir, f.filename)
+        f.save(path)
+        saved.append(path)
+    return jsonify({"paths": saved})
+
+
+@app.route("/index-folder", methods=["POST"])
+def index_folder():
+    data = request.get_json()
+    folder = data.get("folder", "").strip()
+    if not os.path.isdir(folder):
+        return jsonify({"error": f"フォルダが見つかりません: {folder}"}), 400
+    paths = []
+    for ext in ("*.md", "*.txt", "*.pdf"):
+        paths += [
+            str(p) for p in Path(folder).rglob(ext)
+            if ".obsidian" not in p.parts
+        ]
+    return jsonify({"paths": paths, "count": len(paths)})
+
+
+@app.route("/ask", methods=["GET"])
+def ask():
+    question = request.args.get("q", "").strip()
+    if not question:
+        return Response('data: {"event":"error","data":{"msg":"質問を入力してください"}}\n\n',
+                        mimetype="text/event-stream")
+
+    hits = search(question)
+    if not hits:
+        return Response('data: {"event":"error","data":{"msg":"インデックスが空です。先にファイルを追加してください。"}}\n\n',
+                        mimetype="text/event-stream")
+
+    context = "\n\n---\n\n".join(
+        f"【出典: {h['source']}】\n{h['text']}" for h in hits
+    )
+    sources = list({h["source"] for h in hits})
+
+    system = (
+        "あなたは優秀なリサーチアシスタントです。"
+        "以下の参考資料のみを根拠に質問に日本語で答えてください。"
+        "資料に記載のない情報は「資料には記載がありません」と明示してください。"
+    )
+    user = f"参考資料:\n{context}\n\n質問: {question}"
+
+    def generate():
+        # まずソースを送信
+        yield f"data: {json.dumps({'event': 'sources', 'data': {'sources': sources}}, ensure_ascii=False)}\n\n"
+        # ストリーミングで回答
+        for token in stream_chat(system, user):
+            yield f"data: {json.dumps({'event': 'token', 'data': {'text': token}}, ensure_ascii=False)}\n\n"
+        yield f"data: {json.dumps({'event': 'done', 'data': {}}, ensure_ascii=False)}\n\n"
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
+
+
+@app.route("/decompose_query", methods=["GET"])
+def decompose_query():
+    question = request.args.get("q", "").strip()
+    if not question:
+        return Response('data: {"event":"error","data":{"msg":"質問を入力してください"}}\n\n',
+                        mimetype="text/event-stream")
+
+    def generate():
+        # Step1: 質問を分解
+        yield f"data: {json.dumps({'event': 'decomposing', 'data': {'msg': '質問を分解中...'}}, ensure_ascii=False)}\n\n"
+        keywords = decompose_question(question)
+        yield f"data: {json.dumps({'event': 'keywords', 'data': {'keywords': keywords}}, ensure_ascii=False)}\n\n"
+
+        # Step2: 複数キーワードで検索
+        yield f"data: {json.dumps({'event': 'searching', 'data': {'msg': f'{len(keywords)}個のキーワードで検索中...'}}, ensure_ascii=False)}\n\n"
+        hits = multi_query_search(keywords)
+
+        if not hits:
+            yield f"data: {json.dumps({'event': 'error', 'data': {'msg': 'インデックスが空です'}}, ensure_ascii=False)}\n\n"
+            return
+
+        sources = list({h["source"] for h in hits})
+        yield f"data: {json.dumps({'event': 'sources', 'data': {'sources': sources, 'hit_count': len(hits)}}, ensure_ascii=False)}\n\n"
+
+        # Step3: 統合回答生成
+        context = "\n\n---\n\n".join(
+            f"【出典: {h['source']} / キーワード: {h['keyword']}】\n{h['text']}"
+            for h in hits[:10]
+        )
+        system = (
+            "あなたは優秀なリサーチアシスタントです。"
+            "複数の視点から収集した参考資料を統合し、質問に対して包括的な日本語の回答を作成してください。"
+            "資料に記載のない情報は「資料には記載がありません」と明示してください。"
+        )
+        user = (
+            f"元の質問: {question}\n"
+            f"検索に使ったキーワード: {', '.join(keywords)}\n\n"
+            f"参考資料:\n{context}\n\n"
+            "これらの情報を統合して、元の質問に答えてください。"
+        )
+        for token in stream_chat(system, user):
+            yield f"data: {json.dumps({'event': 'token', 'data': {'text': token}}, ensure_ascii=False)}\n\n"
+
+        yield f"data: {json.dumps({'event': 'done', 'data': {}}, ensure_ascii=False)}\n\n"
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
+
+
+@app.route("/stats")
+def stats():
+    collection = get_or_create_collection()
+    count = collection.count()
+    # ソース一覧を取得
+    sources = set()
+    if count > 0:
+        results = collection.get(include=["metadatas"], limit=10000)
+        for m in results["metadatas"]:
+            sources.add(m.get("source", ""))
+    return jsonify({"chunk_count": count, "sources": sorted(sources)})
+
+
+@app.route("/clear", methods=["POST"])
+def clear():
+    chroma_client.delete_collection("documents")
+    get_or_create_collection()
+    return jsonify({"success": True})
+
+
+if __name__ == "__main__":
+    os.makedirs(CHROMA_DIR, exist_ok=True)
+    app.run(debug=True, port=5002, threaded=True)
