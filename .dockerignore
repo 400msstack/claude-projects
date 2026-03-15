@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+rag_db/
+rag_reindex_state.json
+rag_reindex.log
+custom_sets.json
+.DS_Store
+.env
+.git/

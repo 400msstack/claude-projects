@@ -1,0 +1,57 @@
+services:
+
+  localrag:
+    build: .
+    container_name: localrag-service
+    command: python3 rag.py
+    ports:
+      - "5002:5002"
+    volumes:
+      - ${OBSIDIAN_PATH:-./output}:/app/data
+      - ./rag_db:/app/rag_db
+    environment:
+      - OLLAMA_BASE=${OLLAMA_BASE:-http://host.docker.internal:11434}
+      - EMBED_MODEL=${EMBED_MODEL:-nomic-embed-text}
+      - CHAT_MODEL=${CHAT_MODEL:-gemma3:27b}
+      - CHROMA_DIR=/app/rag_db
+      - OUTPUT_DIR=/app/data
+      - LANG_UI=${LANG_UI:-ja}
+    networks:
+      - ai-network
+    restart: unless-stopped
+
+  council:
+    build: .
+    container_name: council-service
+    command: python3 app.py
+    ports:
+      - "5000:5000"
+    environment:
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:1234/v1}
+      - LLM_MODEL=${LLM_MODEL:-openai/gpt-oss-120b}
+      - OUTPUT_DIR=/app/data
+    volumes:
+      - ${OBSIDIAN_PATH:-./output}:/app/data
+    networks:
+      - ai-network
+    restart: unless-stopped
+
+  wisemen:
+    build: .
+    container_name: wisemen-service
+    command: python3 wisemen.py
+    ports:
+      - "5001:5001"
+    environment:
+      - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:1234/v1}
+      - LLM_MODEL=${LLM_MODEL:-openai/gpt-oss-120b}
+      - OUTPUT_DIR=/app/data
+    volumes:
+      - ${OBSIDIAN_PATH:-./output}:/app/data
+    networks:
+      - ai-network
+    restart: unless-stopped
+
+networks:
+  ai-network:
+    driver: bridge

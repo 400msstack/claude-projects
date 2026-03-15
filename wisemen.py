@@ -14,10 +14,17 @@ from openai import OpenAI
 import requests as http_requests
 from bs4 import BeautifulSoup
 
+# .envがあれば読み込む
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # ─── 設定 ───────────────────────────────────────────────
-LLM_BASE_URL = "http://192.168.123.100:1234/v1"
-LLM_MODEL    = "openai/gpt-oss-120b"
-OUTPUT_DIR   = "/Users/yamaosa/Documents/Obsidian/note/Insights/WisemenLogs"
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://192.168.123.100:1234/v1")
+LLM_MODEL    = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
+OUTPUT_DIR   = os.getenv("OUTPUT_DIR", "./output")
 
 client = OpenAI(base_url=LLM_BASE_URL, api_key="not-needed")
 app = Flask(__name__, template_folder="templates")
