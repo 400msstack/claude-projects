@@ -7,6 +7,7 @@ services:
     ports:
       - "5002:5002"
     volumes:
+      - .:/app                                        # ホストコード → 自動反映
       - ${OBSIDIAN_PATH:-./output}:/app/data
       - ./rag_db:/app/rag_db
     environment:
@@ -25,13 +26,14 @@ services:
     container_name: council-service
     command: python3 app.py
     ports:
-      - "5000:5000"
+      - "5010:5000"
+    volumes:
+      - .:/app                                        # ホストコード → 自動反映
+      - ${OBSIDIAN_PATH:-./output}:/app/data
     environment:
       - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:1234/v1}
       - LLM_MODEL=${LLM_MODEL:-openai/gpt-oss-120b}
       - OUTPUT_DIR=/app/data
-    volumes:
-      - ${OBSIDIAN_PATH:-./output}:/app/data
     networks:
       - ai-network
     restart: unless-stopped
@@ -42,12 +44,13 @@ services:
     command: python3 wisemen.py
     ports:
       - "5001:5001"
+    volumes:
+      - .:/app                                        # ホストコード → 自動反映
+      - ${OBSIDIAN_PATH:-./output}:/app/data
     environment:
       - LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:1234/v1}
       - LLM_MODEL=${LLM_MODEL:-openai/gpt-oss-120b}
       - OUTPUT_DIR=/app/data
-    volumes:
-      - ${OBSIDIAN_PATH:-./output}:/app/data
     networks:
       - ai-network
     restart: unless-stopped
