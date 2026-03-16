@@ -17,6 +17,7 @@ services:
       - CHROMA_DIR=/app/rag_db
       - OUTPUT_DIR=/app/data
       - LANG_UI=${LANG_UI:-ja}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     networks:
       - ai-network
     restart: unless-stopped

@@ -103,7 +103,7 @@
 
       <!-- 入力欄 -->
       <div class="card rounded-2xl p-4">
-        <div class="flex items-center gap-3 mb-3">
+        <div class="flex items-center gap-4 mb-3 flex-wrap">
           <label class="flex items-center gap-2 cursor-pointer select-none">
             <div class="relative">
               <input type="checkbox" id="decompose-toggle" class="sr-only">
@@ -112,7 +112,16 @@
             </div>
             <span class="text-xs text-slate-500">質問分解モード</span>
           </label>
+          <label class="flex items-center gap-2 cursor-pointer select-none">
+            <div class="relative">
+              <input type="checkbox" id="web-toggle" class="sr-only">
+              <div id="web-toggle-bg" class="w-10 h-5 bg-[#1e3a1e] rounded-full transition-colors"></div>
+              <div id="web-toggle-dot" class="absolute top-0.5 left-0.5 w-4 h-4 bg-slate-500 rounded-full transition-all"></div>
+            </div>
+            <span class="text-xs text-slate-500">🌐 Web検索</span>
+          </label>
           <span id="decompose-hint" class="hidden text-xs text-emerald-500">漠然とした質問を自動分解して深く検索します</span>
+          <span id="web-hint" class="hidden text-xs text-blue-400">LocalRAG + 外部Webを統合検索します（要APIキー）</span>
         </div>
         <div class="flex gap-3">
           <textarea id="question-input" rows="2" placeholder="資料について質問してください..."
@@ -265,6 +274,22 @@
   });
 
   // ══════════════════════════════════════════
+  // Web検索トグル
+  // ══════════════════════════════════════════
+  document.getElementById('web-toggle').addEventListener('change', function() {
+    const on = this.checked;
+    document.getElementById('web-toggle-bg').style.background = on ? '#1e3a5f' : '';
+    document.getElementById('web-toggle-dot').style.transform = on ? 'translateX(20px)' : '';
+    document.getElementById('web-toggle-dot').style.background = on ? '#60a5fa' : '';
+    document.getElementById('web-hint').classList.toggle('hidden', !on);
+    // Web検索時は質問分解モードを自動ON
+    if (on && !document.getElementById('decompose-toggle').checked) {
+      document.getElementById('decompose-toggle').checked = true;
+      document.getElementById('decompose-toggle').dispatchEvent(new Event('change'));
+    }
+  });
+
+  // ══════════════════════════════════════════
   // Q&A
   // ══════════════════════════════════════════
   function ask() {
@@ -273,8 +298,10 @@
     if (!question) return;
 
     const decompose = document.getElementById('decompose-toggle').checked;
+    const webOn     = document.getElementById('web-toggle').checked;
     input.value = '';
-    appendMessage('user', question + (decompose ? '　🔍 分解モード' : ''));
+    const modeLabel = webOn ? '　🌐 Web+Local' : (decompose ? '　🔍 分解モード' : '');
+    appendMessage('user', question + modeLabel);
 
     const answerEl = appendMessage('assistant', '');
     const contentEl = answerEl.querySelector('.answer-content');
@@ -282,7 +309,8 @@
     document.getElementById('ask-btn').disabled = true;
 
     const endpoint = decompose ? '/decompose_query' : '/ask';
-    const params = new URLSearchParams({ q: question });
+    const source = webOn ? 'all' : 'local';
+    const params = new URLSearchParams({ q: question, source });
     const es = new EventSource(`${endpoint}?${params}`);
     let answer = '';
 
@@ -301,9 +329,13 @@
       } else if (event === 'sources') {
         const sourcesEl = answerEl.querySelector('.sources');
         const existing = sourcesEl.innerHTML;
-        sourcesEl.innerHTML = existing + ' ' + data.sources.map(s =>
-          `<span class="inline-block bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs px-2 py-0.5 rounded-full">📄 ${escHtml(s)}</span>`
+        const localBadges = (data.sources || []).map(s =>
+          `<span class="inline-block bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs px-2 py-0.5 rounded-full">📄 ${escHtml(s.split('/').pop())}</span>`
         ).join(' ');
+        const webBadges = (data.web_sources || []).map(s =>
+          `<span class="inline-block bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs px-2 py-0.5 rounded-full">🌐 ${escHtml(s.replace(/^https?:\/\/([^/]+).*/, '$1'))}</span>`
+        ).join(' ');
+        sourcesEl.innerHTML = existing + ' ' + localBadges + ' ' + webBadges;
         contentEl.textContent = '';
         answer = '';
       } else if (event === 'token') {

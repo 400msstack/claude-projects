@@ -11,6 +11,7 @@ import re
 import json
 import queue
 import threading
+import concurrent.futures
 from pathlib import Path
 from datetime import datetime
 from flask import Flask, render_template, request, Response, jsonify
@@ -26,12 +27,13 @@ except ImportError:
     pass
 
 # ─── 設定 ───────────────────────────────────────────────
-OLLAMA_BASE    = os.getenv("OLLAMA_BASE", "http://localhost:11434")
-EMBED_MODEL    = os.getenv("EMBED_MODEL", "nomic-embed-text")
-CHAT_MODEL     = os.getenv("CHAT_MODEL", "gemma3:27b")
-CHROMA_DIR     = os.getenv("CHROMA_DIR", "./rag_db")
-OUTPUT_DIR     = os.getenv("OUTPUT_DIR", "./output")
-LANG_UI        = os.getenv("LANG_UI", "ja")
+OLLAMA_BASE       = os.getenv("OLLAMA_BASE", "http://localhost:11434")
+EMBED_MODEL       = os.getenv("EMBED_MODEL", "nomic-embed-text")
+CHAT_MODEL        = os.getenv("CHAT_MODEL", "gemma3:27b")
+CHROMA_DIR        = os.getenv("CHROMA_DIR", "./rag_db")
+OUTPUT_DIR        = os.getenv("OUTPUT_DIR", "./output")
+LANG_UI           = os.getenv("LANG_UI", "ja")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CHUNK_SIZE     = 500
 CHUNK_OVERLAP  = 50
 TOP_K          = 5
@@ -215,6 +217,80 @@ def multi_query_search(keywords: list[str], n: int = 3) -> list[dict]:
     return sorted(all_hits, key=lambda x: x["score"], reverse=True)
 
 
+# ─── Web検索 ────────────────────────────────────────────
+def web_search(query: str) -> list[dict]:
+    """Anthropic web_search_20250305 toolで外部Web検索"""
+    if not ANTHROPIC_API_KEY:
+        return []
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"次のクエリについてWeb検索し、検索結果を以下のJSON形式のみで返してください（説明文不要）:\n"
+                    f"クエリ: {query}\n\n"
+                    '{"results": [{"title": "タイトル", "url": "URL", "snippet": "重要な内容の要約（100文字程度）"}]}'
+                ),
+            }],
+        )
+        for block in response.content:
+            if hasattr(block, "type") and block.type == "text":
+                match = re.search(r'\{[\s\S]+\}', block.text)
+                if match:
+                    data = json.loads(match.group())
+                    results = data.get("results", [])
+                    return [
+                        {
+                            "text": r.get("snippet", ""),
+                            "source": r.get("url", r.get("title", "Web")),
+                            "score": 0.75,
+                            "type": "web",
+                        }
+                        for r in results if r.get("snippet")
+                    ]
+    except Exception as e:
+        print(f"Web search error: {e}")
+    return []
+
+
+def web_search_keywords(keywords: list[str]) -> list[dict]:
+    """複数キーワードを並行Web検索して統合"""
+    all_results = []
+    seen_urls = set()
+
+    def _search(kw):
+        results = web_search(kw)
+        for r in results:
+            r["keyword"] = kw
+        return results
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {executor.submit(_search, kw): kw for kw in keywords[:3]}
+        for future in concurrent.futures.as_completed(futures):
+            for r in future.result():
+                url = r.get("source", "")
+                if url not in seen_urls:
+                    seen_urls.add(url)
+                    all_results.append(r)
+    return all_results
+
+
+def rank_and_merge(local_results: list, web_results: list) -> list:
+    """LocalRAGとWeb検索結果を統合・スコアリング"""
+    for r in local_results:
+        r["type"] = "local"
+    for r in web_results:
+        r["type"] = "web"
+        r["score"] = min(r.get("score", 0.75), 0.85)  # Web結果は信頼度で上限補正
+    combined = local_results + web_results
+    return sorted(combined, key=lambda x: x["score"], reverse=True)
+
+
 # ─── 検索・回答 ─────────────────────────────────────────
 def search(query: str, n: int = TOP_K) -> list[dict]:
     collection = get_or_create_collection()
@@ -340,6 +416,7 @@ def ask():
 @app.route("/decompose_query", methods=["GET"])
 def decompose_query():
     question = request.args.get("q", "").strip()
+    source   = request.args.get("source", "local")  # local | web | all
     if not question:
         return Response('data: {"event":"error","data":{"msg":"質問を入力してください"}}\n\n',
                         mimetype="text/event-stream")
@@ -350,25 +427,42 @@ def decompose_query():
         keywords = decompose_question(question)
         yield f"data: {json.dumps({'event': 'keywords', 'data': {'keywords': keywords}}, ensure_ascii=False)}\n\n"
 
-        # Step2: 複数キーワードで検索
-        yield f"data: {json.dumps({'event': 'searching', 'data': {'msg': f'{len(keywords)}個のキーワードで検索中...'}}, ensure_ascii=False)}\n\n"
-        hits = multi_query_search(keywords)
+        # Step2: 検索（source指定に応じてLocal / Web / 両方）
+        label = {"local": "Local", "web": "Web", "all": "Local + Web"}.get(source, "Local")
+        yield f"data: {json.dumps({'event': 'searching', 'data': {'msg': f'{len(keywords)}個のキーワードで検索中（{label}）...'}}, ensure_ascii=False)}\n\n"
 
-        if not hits:
-            yield f"data: {json.dumps({'event': 'error', 'data': {'msg': 'インデックスが空です'}}, ensure_ascii=False)}\n\n"
+        local_hits, web_hits = [], []
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {}
+            if source in ("local", "all"):
+                futures["local"] = executor.submit(multi_query_search, keywords)
+            if source in ("web", "all") and ANTHROPIC_API_KEY:
+                futures["web"] = executor.submit(web_search_keywords, keywords)
+            if "local" in futures:
+                local_hits = futures["local"].result()
+            if "web" in futures:
+                web_hits = futures["web"].result()
+
+        all_hits = rank_and_merge(local_hits, web_hits)
+
+        if not all_hits:
+            msg = "インデックスが空です" if source == "local" else "検索結果が見つかりませんでした"
+            yield f"data: {json.dumps({'event': 'error', 'data': {'msg': msg}}, ensure_ascii=False)}\n\n"
             return
 
-        sources = list({h["source"] for h in hits})
-        yield f"data: {json.dumps({'event': 'sources', 'data': {'sources': sources, 'hit_count': len(hits)}}, ensure_ascii=False)}\n\n"
+        local_sources = list({h["source"] for h in all_hits if h.get("type") != "web"})
+        web_sources   = list({h["source"] for h in all_hits if h.get("type") == "web"})
+        yield f"data: {json.dumps({'event': 'sources', 'data': {'sources': local_sources, 'web_sources': web_sources, 'hit_count': len(all_hits)}}, ensure_ascii=False)}\n\n"
 
         # Step3: 統合回答生成
         context = "\n\n---\n\n".join(
-            f"【出典: {h['source']} / キーワード: {h['keyword']}】\n{h['text']}"
-            for h in hits[:10]
+            f"【出典: {h['source']} / キーワード: {h.get('keyword', '')} / ソース: {'Web' if h.get('type') == 'web' else 'Local'}】\n{h['text']}"
+            for h in all_hits[:10]
         )
         system = (
             "あなたは優秀なリサーチアシスタントです。"
-            "複数の視点から収集した参考資料を統合し、質問に対して包括的な日本語の回答を作成してください。"
+            "複数の視点から収集した参考資料（ローカル文書・Web検索結果）を統合し、質問に対して包括的な日本語の回答を作成してください。"
             "資料に記載のない情報は「資料には記載がありません」と明示してください。"
         )
         user = (
@@ -408,4 +502,4 @@ def clear():
 
 if __name__ == "__main__":
     os.makedirs(CHROMA_DIR, exist_ok=True)
-    app.run(debug=True, port=5002, threaded=True)
+    app.run(host="0.0.0.0", debug=True, port=5002, threaded=True)
