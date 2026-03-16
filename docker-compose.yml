@@ -56,6 +56,27 @@ services:
       - ai-network
     restart: unless-stopped
 
+  webresearcher:
+    build: .
+    container_name: webresearcher-service
+    command: python3 webresearcher.py
+    ports:
+      - "5003:5003"
+    volumes:
+      - .:/app
+      - ${OBSIDIAN_PATH:-./output}:/app/data
+    environment:
+      - OLLAMA_BASE=${OLLAMA_BASE:-http://host.docker.internal:11434}
+      - CHAT_MODEL=${CHAT_MODEL:-gemma3:27b}
+      - DUCKDUCKGO_API_KEY=${DUCKDUCKGO_API_KEY:-}
+      - OUTPUT_DIR=/app/data
+      - RAG_SERVICE_URL=http://localrag:5002
+    networks:
+      - ai-network
+    restart: unless-stopped
+    depends_on:
+      - localrag
+
 networks:
   ai-network:
     driver: bridge

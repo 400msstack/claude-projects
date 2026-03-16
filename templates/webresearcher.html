@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebResearcher — Web情報収集</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: #080d14; color: #e2e8f0; font-family: 'Hiragino Sans', sans-serif; }
+    .card  { background: #0d1520; border: 1px solid #1a2e4a; }
+    .card2 { background: #0a1218; border: 1px solid #142038; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #0d1520; }
+    ::-webkit-scrollbar-thumb { background: #1e4080; border-radius: 3px; }
+    .fade-in { animation: fadeIn 0.3s ease; }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+    .phase-dot { width: 8px; height: 8px; border-radius: 50%; background: #1e4080; display: inline-block; }
+    .phase-dot.active { background: #3b82f6; box-shadow: 0 0 8px #3b82f6; }
+    .phase-dot.done { background: #22c55e; }
+    .cursor-blink::after { content: '▊'; animation: blink 1s infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+  </style>
+</head>
+<body class="min-h-screen">
+
+  <div class="border-b border-[#1a2e4a] px-6 py-0 flex items-center gap-4 sticky top-0 z-50" style="background:#080d14">
+    <span class="text-blue-400 font-bold text-lg py-3 mr-4">🔭 WebResearcher</span>
+    <span class="text-xs text-slate-500">{{ chat_model }} · DuckDuckGo</span>
+    <div class="ml-auto flex items-center gap-3">
+      <span class="text-xs text-blue-400 bg-blue-500/10 border border-blue-500/20 px-3 py-1 rounded-full">月200回 無料枠</span>
+    </div>
+  </div>
+
+  <div class="max-w-4xl mx-auto p-4 md:p-8 space-y-6">
+
+    <!-- 入力 -->
+    <div class="card rounded-2xl p-6">
+      <h2 class="text-sm font-bold text-blue-400 mb-4">調査する質問</h2>
+      <div class="flex gap-3 mb-3">
+        <textarea id="question-input" rows="2" placeholder="例: 2026年の最新AI動向について"
+          class="flex-1 bg-[#080d14] border border-[#1a2e4a] rounded-xl px-4 py-3 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 text-sm resize-none"></textarea>
+        <button id="research-btn" onclick="startResearch()"
+          class="px-6 py-3 bg-blue-700 hover:bg-blue-600 disabled:bg-slate-700 disabled:cursor-not-allowed rounded-xl text-sm font-bold transition-colors self-end whitespace-nowrap">
+          調査開始
+        </button>
+      </div>
+      <div class="flex items-center gap-4 text-xs text-slate-500">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" id="save-toggle" checked class="accent-blue-500"> Obsidianに保存
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" id="rag-toggle" checked class="accent-blue-500"> LocalRAGにインデックス
+        </label>
+      </div>
+    </div>
+
+    <!-- フェーズ表示 -->
+    <div id="phase-tracker" class="hidden card rounded-2xl p-5">
+      <div class="flex items-center justify-between text-xs text-slate-500 mb-3">
+        <div id="phase-label" class="text-blue-400 font-semibold"></div>
+      </div>
+      <div class="flex items-center gap-3">
+        <div class="flex items-center gap-1.5">
+          <span id="dot-1" class="phase-dot"></span><span class="text-xs">分解</span>
+        </div>
+        <div class="flex-1 h-px bg-[#1a2e4a]"></div>
+        <div class="flex items-center gap-1.5">
+          <span id="dot-2" class="phase-dot"></span><span class="text-xs">検索</span>
+        </div>
+        <div class="flex-1 h-px bg-[#1a2e4a]"></div>
+        <div class="flex items-center gap-1.5">
+          <span id="dot-3" class="phase-dot"></span><span class="text-xs">選択</span>
+        </div>
+        <div class="flex-1 h-px bg-[#1a2e4a]"></div>
+        <div class="flex items-center gap-1.5">
+          <span id="dot-4" class="phase-dot"></span><span class="text-xs">取得・要約</span>
+        </div>
+        <div class="flex-1 h-px bg-[#1a2e4a]"></div>
+        <div class="flex items-center gap-1.5">
+          <span id="dot-5" class="phase-dot"></span><span class="text-xs">保存</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- キーワード -->
+    <div id="keywords-area" class="hidden card rounded-2xl p-5 fade-in">
+      <h3 class="text-xs font-bold text-slate-400 mb-3">分解されたキーワード</h3>
+      <div id="keywords-list" class="flex flex-wrap gap-2"></div>
+    </div>
+
+    <!-- 検索結果一覧 -->
+    <div id="search-results-area" class="hidden card rounded-2xl p-5 fade-in">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-xs font-bold text-slate-400">検索結果</h3>
+        <span id="search-count" class="text-xs text-blue-400"></span>
+      </div>
+      <div id="search-results-list" class="space-y-1.5 max-h-48 overflow-y-auto"></div>
+    </div>
+
+    <!-- 要約結果 -->
+    <div id="summaries-area" class="hidden space-y-4 fade-in">
+      <h3 class="text-xs font-bold text-slate-400 px-1">ページ要約</h3>
+      <div id="summaries-list" class="space-y-4"></div>
+    </div>
+
+    <!-- 完了 -->
+    <div id="done-area" class="hidden card rounded-2xl p-5 fade-in">
+      <div class="flex items-center gap-3 mb-3">
+        <span class="text-green-400 text-xl">✅</span>
+        <h3 class="text-sm font-bold text-green-400">調査完了</h3>
+      </div>
+      <div id="done-details" class="text-xs text-slate-400 space-y-1"></div>
+    </div>
+
+    <!-- エラー -->
+    <div id="error-area" class="hidden card border-red-900/50 rounded-2xl p-4 fade-in">
+      <p id="error-msg" class="text-sm text-red-400"></p>
+    </div>
+
+  </div>
+
+  <script>
+  let currentEs = null;
+
+  function startResearch() {
+    const question = document.getElementById('question-input').value.trim();
+    if (!question) return;
+
+    const saveObs = document.getElementById('save-toggle').checked;
+    const doRag   = document.getElementById('rag-toggle').checked;
+
+    // リセット
+    resetUI();
+    document.getElementById('research-btn').disabled = true;
+    document.getElementById('phase-tracker').classList.remove('hidden');
+
+    if (currentEs) currentEs.close();
+
+    const params = new URLSearchParams({
+      q: question,
+      save: saveObs ? 'true' : 'false',
+      rag: doRag ? 'true' : 'false',
+    });
+    currentEs = new EventSource(`/research?${params}`);
+
+    currentEs.onmessage = (e) => {
+      const { event, data } = JSON.parse(e.data);
+
+      if (event === 'phase') {
+        setPhaseLabel(data.msg);
+        setPhaseActive(data.phase);
+
+      } else if (event === 'keywords') {
+        setPhaseActive(1, true);
+        showKeywords(data.keywords);
+
+      } else if (event === 'search_results') {
+        setPhaseActive(2, true);
+        showSearchResults(data.results, data.count);
+
+      } else if (event === 'extracting') {
+        setPhaseActive(4);
+        addExtracting(data.title, data.url);
+
+      } else if (event === 'summarized') {
+        addSummary(data.title, data.url, data.summary);
+
+      } else if (event === 'saved') {
+        setPhaseActive(5);
+        document.getElementById('done-area').classList.remove('hidden');
+        const el = document.getElementById('done-details');
+        el.innerHTML += `<p>✅ Obsidian保存: <span class="text-slate-300">${escHtml(data.path.split('/').pop())}</span></p>`;
+
+      } else if (event === 'indexed') {
+        const el = document.getElementById('done-details');
+        el.innerHTML += `<p>✅ LocalRAGインデックス: <span class="text-slate-300">${data.success ? '完了' : '失敗'}</span></p>`;
+
+      } else if (event === 'done') {
+        setPhaseActive(5, true);
+        setPhaseLabel('調査完了');
+        document.getElementById('done-area').classList.remove('hidden');
+        currentEs.close();
+        document.getElementById('research-btn').disabled = false;
+
+      } else if (event === 'error') {
+        document.getElementById('error-area').classList.remove('hidden');
+        document.getElementById('error-msg').textContent = data.msg;
+        currentEs.close();
+        document.getElementById('research-btn').disabled = false;
+      }
+    };
+
+    currentEs.onerror = () => {
+      currentEs.close();
+      document.getElementById('research-btn').disabled = false;
+    };
+  }
+
+  function resetUI() {
+    ['keywords-area','search-results-area','summaries-area','done-area','error-area'].forEach(id => {
+      document.getElementById(id).classList.add('hidden');
+    });
+    document.getElementById('keywords-list').innerHTML = '';
+    document.getElementById('search-results-list').innerHTML = '';
+    document.getElementById('summaries-list').innerHTML = '';
+    document.getElementById('done-details').innerHTML = '';
+    document.getElementById('error-msg').textContent = '';
+    for (let i = 1; i <= 5; i++) {
+      const dot = document.getElementById(`dot-${i}`);
+      dot.classList.remove('active','done');
+    }
+  }
+
+  function setPhaseLabel(msg) {
+    document.getElementById('phase-label').textContent = msg;
+  }
+
+  function setPhaseActive(phase, done = false) {
+    for (let i = 1; i <= 5; i++) {
+      const dot = document.getElementById(`dot-${i}`);
+      if (i < phase) dot.classList.add('done');
+      else if (i === phase) {
+        dot.classList.remove('done');
+        dot.classList.toggle('active', !done);
+        if (done) dot.classList.add('done');
+      }
+    }
+  }
+
+  function showKeywords(keywords) {
+    document.getElementById('keywords-area').classList.remove('hidden');
+    document.getElementById('keywords-list').innerHTML = keywords.map(k =>
+      `<span class="bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs px-3 py-1 rounded-full">🔑 ${escHtml(k)}</span>`
+    ).join('');
+  }
+
+  function showSearchResults(results, count) {
+    document.getElementById('search-results-area').classList.remove('hidden');
+    document.getElementById('search-count').textContent = `${count}件ヒット`;
+    const el = document.getElementById('search-results-list');
+    el.innerHTML = results.map((r, i) => `
+      <div class="flex items-start gap-2 py-1">
+        <span class="text-xs text-slate-600 w-4 flex-shrink-0">${i+1}</span>
+        <div class="min-w-0">
+          <a href="${escHtml(r.url)}" target="_blank"
+            class="text-xs text-blue-400 hover:text-blue-300 truncate block">${escHtml(r.title || r.url)}</a>
+          <p class="text-xs text-slate-600 truncate">${escHtml(r.url)}</p>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function addExtracting(title, url) {
+    document.getElementById('summaries-area').classList.remove('hidden');
+    const el = document.getElementById('summaries-list');
+    const id = `summary-${Date.now()}`;
+    el.insertAdjacentHTML('beforeend', `
+      <div id="${id}" class="card rounded-2xl p-5 fade-in">
+        <p class="text-xs text-slate-400 truncate mb-1">${escHtml(title)}</p>
+        <a href="${escHtml(url)}" target="_blank" class="text-xs text-blue-500 hover:text-blue-400 truncate block mb-3">${escHtml(url)}</a>
+        <p class="summary-text text-sm text-slate-400 cursor-blink">取得中...</p>
+      </div>
+    `);
+    el.lastElementChild._url = url;
+  }
+
+  function addSummary(title, url, summary) {
+    const items = document.querySelectorAll('#summaries-list > div');
+    for (const item of items) {
+      const link = item.querySelector('a');
+      if (link && link.href.includes(encodeURIComponent(url).replace(/%3A/g,':').replace(/%2F/g,'/'))) {
+        const p = item.querySelector('.summary-text');
+        if (p) {
+          p.classList.remove('cursor-blink');
+          p.textContent = summary;
+        }
+        return;
+      }
+    }
+    // フォールバック: 最後の要素に追加
+    const items2 = document.querySelectorAll('#summaries-list > div');
+    if (items2.length) {
+      const last = items2[items2.length - 1];
+      const p = last.querySelector('.summary-text');
+      if (p) { p.classList.remove('cursor-blink'); p.textContent = summary; }
+    }
+  }
+
+  function escHtml(str) {
+    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  document.getElementById('question-input').addEventListener('keydown', e => {
+    // Enter は改行のみ、送信はボタン
+  });
+  </script>
+</body>
+</html>
