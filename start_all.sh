@@ -4,9 +4,10 @@
 cd /Users/yamaosa/claude-projects
 
 # 既に起動していれば何もしない
-pgrep -f "app.py" > /dev/null    || /opt/homebrew/bin/python3 app.py &
-pgrep -f "wisemen.py" > /dev/null || /opt/homebrew/bin/python3 wisemen.py &
-pgrep -f "rag.py" > /dev/null     || /opt/homebrew/bin/python3 rag.py &
+pgrep -f "app.py" > /dev/null            || /opt/homebrew/bin/python3 app.py &
+pgrep -f "wisemen.py" > /dev/null        || /opt/homebrew/bin/python3 wisemen.py &
+pgrep -f "rag.py" > /dev/null            || /opt/homebrew/bin/python3 rag.py &
+pgrep -f "voice_interface.py" > /dev/null || /opt/homebrew/bin/python3 voice_interface.py &
 
 # ブラウザで3つを開く
 sleep 2

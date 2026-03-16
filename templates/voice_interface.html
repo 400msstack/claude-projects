@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VoiceInterface — Claude 音声会話</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: #080a14; color: #e2e8f0; font-family: 'Hiragino Sans', sans-serif; }
+    .card { background: #0d1120; border: 1px solid #1a2040; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #0d1120; }
+    ::-webkit-scrollbar-thumb { background: #2d3a80; border-radius: 3px; }
+    .fade-in { animation: fadeIn 0.3s ease; }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+
+    /* マイクボタン */
+    .mic-btn {
+      width: 80px; height: 80px; border-radius: 50%;
+      background: #1e3a8a; border: 2px solid #3b82f6;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; transition: all 0.2s;
+      font-size: 2rem;
+    }
+    .mic-btn:hover { background: #1d4ed8; transform: scale(1.05); }
+    .mic-btn.recording {
+      background: #7f1d1d;
+      border-color: #ef4444;
+      animation: pulse 1s infinite;
+    }
+    .mic-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+    @keyframes pulse {
+      0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.4); }
+      50% { box-shadow: 0 0 0 12px rgba(239,68,68,0); }
+    }
+  </style>
+</head>
+<body class="min-h-screen">
+
+  <div class="border-b border-[#1a2040] px-6 py-0 flex items-center gap-4 sticky top-0 z-50" style="background:#080a14">
+    <span class="text-indigo-400 font-bold text-lg py-3 mr-4">🎤 VoiceInterface</span>
+    <span class="text-xs text-slate-500">{{ claude_model }} · ja-JP-NanamiNeural</span>
+    <div class="ml-auto">
+      <button onclick="clearChat()" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">会話をクリア</button>
+    </div>
+  </div>
+
+  <div class="max-w-2xl mx-auto p-4 md:p-8 flex flex-col gap-6">
+
+    <!-- 会話ログ -->
+    <div id="chat-log" class="card rounded-2xl p-5 min-h-[400px] max-h-[60vh] overflow-y-auto space-y-4">
+      <div class="text-center text-slate-600 text-sm py-12" id="placeholder">
+        <p class="text-4xl mb-3">🎤</p>
+        <p>マイクボタンを押して話しかけてください</p>
+        <p class="text-xs mt-2 text-slate-700">ブラウザのマイク許可が必要です</p>
+      </div>
+    </div>
+
+    <!-- コントロール -->
+    <div class="card rounded-2xl p-6">
+      <div class="flex flex-col items-center gap-4">
+
+        <!-- ステータス -->
+        <p id="status" class="text-sm text-slate-500 h-5"></p>
+
+        <!-- マイクボタン -->
+        <button id="mic-btn" class="mic-btn" onclick="toggleRecording()">🎤</button>
+
+        <!-- 録音時間バー -->
+        <div class="w-full">
+          <div id="timer-bar-bg" class="hidden w-full bg-[#0a0f1e] rounded-full h-1.5">
+            <div id="timer-bar" class="bg-red-500 h-1.5 rounded-full transition-all duration-1000" style="width:0%"></div>
+          </div>
+          <p id="timer-label" class="text-center text-xs text-slate-600 mt-1 hidden"></p>
+        </div>
+
+        <p class="text-xs text-slate-700">最大15秒 · 話し終わったらもう一度押して送信</p>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+  const SESSION_ID = 'session_' + Date.now();
+  let mediaRecorder = null;
+  let audioChunks = [];
+  let isRecording = false;
+  let timerInterval = null;
+  let recordSeconds = 0;
+  const MAX_SECONDS = 15;
+
+  // ── マイク録音 ──────────────────────────────────────
+  async function toggleRecording() {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      await startRecording();
+    }
+  }
+
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream);
+      audioChunks = [];
+      recordSeconds = 0;
+
+      mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+      mediaRecorder.onstop = () => {
+        stream.getTracks().forEach(t => t.stop());
+        sendAudio();
+      };
+
+      mediaRecorder.start();
+      isRecording = true;
+      setMicState('recording');
+      setStatus('🔴 録音中... 話し終わったら再度押してください');
+
+      // タイマーバー
+      document.getElementById('timer-bar-bg').classList.remove('hidden');
+      document.getElementById('timer-label').classList.remove('hidden');
+      timerInterval = setInterval(() => {
+        recordSeconds++;
+        const pct = (recordSeconds / MAX_SECONDS) * 100;
+        document.getElementById('timer-bar').style.width = pct + '%';
+        document.getElementById('timer-label').textContent = `${recordSeconds} / ${MAX_SECONDS}秒`;
+        if (recordSeconds >= MAX_SECONDS) stopRecording();
+      }, 1000);
+
+    } catch (e) {
+      setStatus('❌ マイクへのアクセスが拒否されました');
+    }
+  }
+
+  function stopRecording() {
+    if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+    mediaRecorder.stop();
+    isRecording = false;
+    clearInterval(timerInterval);
+    document.getElementById('timer-bar-bg').classList.add('hidden');
+    document.getElementById('timer-label').classList.add('hidden');
+    document.getElementById('timer-bar').style.width = '0%';
+    setMicState('disabled');
+    setStatus('⏳ 送信中...');
+  }
+
+  // ── サーバーへ送信 ──────────────────────────────────
+  function sendAudio() {
+    const blob = new Blob(audioChunks, { type: 'audio/webm' });
+    const form = new FormData();
+    form.append('audio', blob, 'recording.webm');
+    form.append('session_id', SESSION_ID);
+
+    const es_url = '/chat';
+    // FormDataはEventSourceで送れないのでfetchでPOSTしてSSE風に読む
+    fetch('/chat', { method: 'POST', body: form })
+      .then(res => {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        function read() {
+          reader.read().then(({ done, value }) => {
+            if (done) { setMicState('idle'); return; }
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n\n');
+            buffer = lines.pop();
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const { event, data } = JSON.parse(line.slice(6));
+                  handleEvent(event, data);
+                } catch(e) {}
+              }
+            }
+            read();
+          });
+        }
+        read();
+      })
+      .catch(e => {
+        setStatus('❌ エラー: ' + e.message);
+        setMicState('idle');
+      });
+  }
+
+  // ── SSEイベント処理 ─────────────────────────────────
+  let currentReplyEl = null;
+
+  function handleEvent(event, data) {
+    if (event === 'status') {
+      setStatus(data.msg);
+
+    } else if (event === 'transcript') {
+      removePlaceholder();
+      appendMessage('user', data.text);
+
+    } else if (event === 'reply') {
+      currentReplyEl = appendMessage('claude', data.text);
+
+    } else if (event === 'audio_ready') {
+      setStatus('🔊 再生中...');
+      const audio = new Audio(data.url);
+      audio.onended = () => {
+        setStatus('');
+        setMicState('idle');
+      };
+      audio.play().catch(() => {
+        setStatus('');
+        setMicState('idle');
+      });
+
+    } else if (event === 'done') {
+      setMicState('idle');
+
+    } else if (event === 'error') {
+      setStatus('❌ ' + data.msg);
+      setMicState('idle');
+    }
+  }
+
+  // ── UI ──────────────────────────────────────────────
+  function appendMessage(role, text) {
+    const log = document.getElementById('chat-log');
+    const el = document.createElement('div');
+    el.className = 'fade-in';
+    if (role === 'user') {
+      el.innerHTML = `
+        <div class="flex justify-end">
+          <div class="max-w-[80%] bg-indigo-800/30 border border-indigo-700/30 rounded-2xl rounded-tr-sm px-4 py-3 text-sm text-slate-200">
+            ${escHtml(text)}
+          </div>
+        </div>`;
+    } else {
+      el.innerHTML = `
+        <div class="flex gap-3">
+          <div class="flex-shrink-0 w-7 h-7 rounded-full bg-indigo-800/40 border border-indigo-700/30 flex items-center justify-center text-xs">🤖</div>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm text-slate-200 leading-relaxed">${escHtml(text)}</p>
+          </div>
+        </div>`;
+    }
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+    return el;
+  }
+
+  function removePlaceholder() {
+    const p = document.getElementById('placeholder');
+    if (p) p.remove();
+  }
+
+  function setStatus(msg) {
+    document.getElementById('status').textContent = msg;
+  }
+
+  function setMicState(state) {
+    const btn = document.getElementById('mic-btn');
+    btn.classList.remove('recording');
+    btn.disabled = false;
+    if (state === 'recording') {
+      btn.classList.add('recording');
+      btn.textContent = '⏹️';
+    } else if (state === 'disabled') {
+      btn.disabled = true;
+      btn.textContent = '⏳';
+    } else {
+      btn.textContent = '🎤';
+    }
+  }
+
+  async function clearChat() {
+    await fetch('/clear', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: SESSION_ID })
+    });
+    document.getElementById('chat-log').innerHTML = `
+      <div class="text-center text-slate-600 text-sm py-12" id="placeholder">
+        <p class="text-4xl mb-3">🎤</p>
+        <p>マイクボタンを押して話しかけてください</p>
+        <p class="text-xs mt-2 text-slate-700">ブラウザのマイク許可が必要です</p>
+      </div>`;
+    setStatus('');
+  }
+
+  function escHtml(str) {
+    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+  </script>
+</body>
+</html>
